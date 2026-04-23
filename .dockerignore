@@ -1,0 +1,16 @@
+venv/
+venv_x86/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+logs/
+.env
+.env.docker
+.DS_Store
+tests/
+docs/
+scripts/
+*.md

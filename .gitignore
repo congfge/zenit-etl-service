@@ -1,0 +1,14 @@
+venv
+.claude
+
+zenitclustering_limpiezadata.py
+
+scripts
+logs
+
+.DS_Store
+.env
+
+deployment/
+
+.env.*

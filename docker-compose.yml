@@ -1,0 +1,58 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  api:
+    build: .
+    platform: linux/amd64
+    ports:
+      - "3666:3666"
+    env_file: .env.docker
+    environment:
+      REDIS_HOST: redis
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      SQLSERVER_HOST: host.docker.internal
+      SQLSERVER_PORT: "11433"
+      POSTGRES_HOST: host.docker.internal
+      POSTGRES_PORT: "15432"
+      DB2_HOST: host.docker.internal
+      DB2_PORT: "10446"
+    volumes:
+      - ./src:/app/src
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis
+
+  worker:
+    build: .
+    platform: linux/amd64
+    command: >
+      watchmedo auto-restart
+        --directory=/app/src
+        --pattern="*.py"
+        --recursive
+        --
+        celery -A celery_config.celery_app worker --loglevel=info
+    env_file: .env.docker
+    environment:
+      REDIS_HOST: redis
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+      SQLSERVER_HOST: host.docker.internal
+      SQLSERVER_PORT: "11433"
+      POSTGRES_HOST: host.docker.internal
+      POSTGRES_PORT: "15432"
+      DB2_HOST: host.docker.internal
+      DB2_PORT: "10446"
+    volumes:
+      - ./src:/app/src
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - redis

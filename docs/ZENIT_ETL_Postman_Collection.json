@@ -1,0 +1,1367 @@
+{
+  "info": {
+    "_postman_id": "zenit-etl-service-v1",
+    "name": "ZENIT ETL Service",
+    "description": "Coleccion Postman para el servicio ETL + Clustering de ZENIT (FastAPI + Celery + Redis).\n\nBase URL: http://localhost:3666\n\nFlujo tipico de uso:\n1. Verificar salud del servicio con Health Check\n2. Asegurarse de que sectores_geometria este poblada (Refresh Sectores)\n3. Disparar ETL con Trigger ETL Refresh → el clustering se encola automaticamente al terminar\n4. Copiar el job_id de la respuesta y monitorear con Get Job Status o WebSocket\n5. Para ejecutar clustering manualmente: Run Clustering\n\nRequisitos:\n- Servicio corriendo en puerto 3666 (PYTHONPATH=src uvicorn src.main:app --reload --port 3666)\n- Redis corriendo en localhost:6379\n- Celery worker activo (PYTHONPATH=src celery -A celery_config.celery_app worker --loglevel=info)\n- SQL Server y PostgreSQL accesibles con las credenciales configuradas en .env\n- Capa \"Clusters-Creditos\" creada en la tabla layer (ver CLAUDE.md)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:3666",
+      "type": "string",
+      "description": "URL base del servicio ETL"
+    },
+    {
+      "key": "api_version",
+      "value": "v1",
+      "type": "string",
+      "description": "Version de la API"
+    },
+    {
+      "key": "job_id",
+      "value": "",
+      "type": "string",
+      "description": "UUID del job ETL. Se actualiza automaticamente al ejecutar Trigger ETL Refresh."
+    },
+    {
+      "key": "clustering_job_id",
+      "value": "",
+      "type": "string",
+      "description": "UUID del job de clustering. Se actualiza automaticamente al ejecutar Run Clustering."
+    },
+    {
+      "key": "internal_token",
+      "value": "ZENIT_SUPER_SECRET_2026",
+      "type": "string",
+      "description": "Token para el header X-Internal-Token. Requerido en endpoints de mutacion."
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "description": "Endpoints de salud del servicio y conectividad a bases de datos",
+      "item": [
+        {
+          "name": "Health Check",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response is successful', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.success).to.be.true;",
+                  "});",
+                  "",
+                  "pm.test('Message indicates server is up', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.message).to.include('running');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/health/check-health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "{{api_version}}",
+                "health",
+                "check-health"
+              ]
+            },
+            "description": "Verifica que el servidor FastAPI esta activo y respondiendo.\n\nRespuesta esperada:\n{\n  \"success\": true,\n  \"data\": null,\n  \"message\": \"Server up and running\",\n  \"error\": null\n}"
+          },
+          "response": [
+            {
+              "name": "200 OK - Server Running",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/health/check-health"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": null,\n  \"message\": \"Server up and running\",\n  \"error\": null\n}"
+            }
+          ]
+        },
+        {
+          "name": "Check All Databases",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response has data with all three databases', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.data).to.have.property('sqlserver');",
+                  "  pm.expect(body.data).to.have.property('postgres');",
+                  "  pm.expect(body.data).to.have.property('db2');",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "if (body.data) {",
+                  "  Object.entries(body.data).forEach(([db, result]) => {",
+                  "    const icon = result.status === 'ok' ? '✓' : '✗';",
+                  "    const info = result.status === 'ok' ? `${result.latency_ms}ms` : result.error;",
+                  "    console.log(`${icon} ${db}: ${info}`);",
+                  "  });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/health/databases",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "{{api_version}}",
+                "health",
+                "databases"
+              ]
+            },
+            "description": "Verifica la conectividad de las tres bases de datos en uso: SQL Server, PostgreSQL y DB2.\n\nCada base de datos ejecuta una query de prueba (SELECT 1 o equivalente) y mide la latencia en milisegundos.\n\nEl campo `success` del ApiResponse es `true` solo si TODAS las conexiones son exitosas.\n\nQuery de prueba por DB:\n- SQL Server: SELECT 1\n- PostgreSQL: SELECT 1\n- DB2: SELECT 1 FROM SYSIBM.SYSDUMMY1"
+          },
+          "response": [
+            {
+              "name": "200 OK - Todas OK",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/health/databases"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"sqlserver\": {\"status\": \"ok\", \"latency_ms\": 12, \"host\": \"sqlserver-host\"},\n    \"postgres\":  {\"status\": \"ok\", \"latency_ms\": 3,  \"host\": \"localhost\"},\n    \"db2\":       {\"status\": \"ok\", \"latency_ms\": 87, \"host\": \"db2-host\"}\n  },\n  \"message\": \"Todas las conexiones OK\",\n  \"error\": null\n}"
+            },
+            {
+              "name": "200 OK - Una conexion fallida",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/health/databases"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": false,\n  \"data\": {\n    \"sqlserver\": {\"status\": \"ok\",    \"latency_ms\": 12, \"host\": \"sqlserver-host\"},\n    \"postgres\":  {\"status\": \"ok\",    \"latency_ms\": 3,  \"host\": \"localhost\"},\n    \"db2\":       {\"status\": \"error\", \"error\": \"Connection refused\", \"host\": \"db2-host\"}\n  },\n  \"message\": \"Una o más conexiones fallaron\",\n  \"error\": null\n}"
+            }
+          ]
+        },
+        {
+          "name": "Check SQL Server",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Has status and host fields', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.data).to.have.property('status');",
+                  "  pm.expect(body.data).to.have.property('host');",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "if (body.data) {",
+                  "  const ok = body.data.status === 'ok';",
+                  "  console.log(`SQL Server ${ok ? '✓' : '✗'} — ${ok ? body.data.latency_ms + 'ms' : body.data.error}`);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/health/databases/sqlserver",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "{{api_version}}",
+                "health",
+                "databases",
+                "sqlserver"
+              ]
+            },
+            "description": "Verifica individualmente la conectividad a SQL Server.\n\nEjecuta SELECT 1 y mide la latencia. Util para diagnosticar cuando el endpoint combinado /databases reporta error."
+          },
+          "response": [
+            {
+              "name": "200 OK - SQL Server Conectado",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/health/databases/sqlserver"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": {\"status\": \"ok\", \"latency_ms\": 12, \"host\": \"sqlserver-host\"},\n  \"message\": \"SQL Server: ok\",\n  \"error\": null\n}"
+            },
+            {
+              "name": "200 OK - SQL Server Error",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/health/databases/sqlserver"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": false,\n  \"data\": {\"status\": \"error\", \"error\": \"(pyodbc.OperationalError) Could not connect to server\", \"host\": \"sqlserver-host\"},\n  \"message\": \"SQL Server: error\",\n  \"error\": null\n}"
+            }
+          ]
+        },
+        {
+          "name": "Check PostgreSQL",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Has status and host fields', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.data).to.have.property('status');",
+                  "  pm.expect(body.data).to.have.property('host');",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "if (body.data) {",
+                  "  const ok = body.data.status === 'ok';",
+                  "  console.log(`PostgreSQL ${ok ? '✓' : '✗'} — ${ok ? body.data.latency_ms + 'ms' : body.data.error}`);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/health/databases/postgres",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "{{api_version}}",
+                "health",
+                "databases",
+                "postgres"
+              ]
+            },
+            "description": "Verifica individualmente la conectividad a PostgreSQL.\n\nEjecuta SELECT 1 y mide la latencia."
+          },
+          "response": [
+            {
+              "name": "200 OK - PostgreSQL Conectado",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/health/databases/postgres"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": {\"status\": \"ok\", \"latency_ms\": 3, \"host\": \"localhost\"},\n  \"message\": \"PostgreSQL: ok\",\n  \"error\": null\n}"
+            },
+            {
+              "name": "200 OK - PostgreSQL Error",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/health/databases/postgres"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": false,\n  \"data\": {\"status\": \"error\", \"error\": \"could not connect to server: Connection refused\", \"host\": \"localhost\"},\n  \"message\": \"PostgreSQL: error\",\n  \"error\": null\n}"
+            }
+          ]
+        },
+        {
+          "name": "Check DB2",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Has status and host fields', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.data).to.have.property('status');",
+                  "  pm.expect(body.data).to.have.property('host');",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "if (body.data) {",
+                  "  const ok = body.data.status === 'ok';",
+                  "  console.log(`DB2 ${ok ? '✓' : '✗'} — ${ok ? body.data.latency_ms + 'ms' : body.data.error}`);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/health/databases/db2",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "{{api_version}}",
+                "health",
+                "databases",
+                "db2"
+              ]
+            },
+            "description": "Verifica individualmente la conectividad a IBM DB2.\n\nEjecuta SELECT 1 FROM SYSIBM.SYSDUMMY1 (equivalente a SELECT 1 en DB2) y mide la latencia.\n\nNota: Este endpoint requiere que el servicio corra en Docker (platform: linux/amd64) ya que ibm-db no instala en macOS Apple Silicon."
+          },
+          "response": [
+            {
+              "name": "200 OK - DB2 Conectado",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/health/databases/db2"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": {\"status\": \"ok\", \"latency_ms\": 87, \"host\": \"db2-host\"},\n  \"message\": \"DB2: ok\",\n  \"error\": null\n}"
+            },
+            {
+              "name": "200 OK - DB2 Error",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/health/databases/db2"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": false,\n  \"data\": {\"status\": \"error\", \"error\": \"[IBM][CLI Driver] SQL30081N  A communication error has been detected\", \"host\": \"db2-host\"},\n  \"message\": \"DB2: error\",\n  \"error\": null\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ETL Refresh",
+      "description": "Endpoints para disparar y monitorear el proceso ETL principal.\n\nEl ETL extrae registros financieros desde SQL Server (tabla Zenit_data_historico), los limpia y transforma, y los carga en PostgreSQL. Procesa automaticamente las ultimas 3 fechas de cierre (ultimo dia de cada uno de los 3 meses anteriores al mes actual).",
+      "item": [
+        {
+          "name": "Trigger ETL Refresh",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response is successful', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.success).to.be.true;",
+                  "});",
+                  "",
+                  "pm.test('Job was created with QUEUED status', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.data).to.have.property('job_id');",
+                  "  pm.expect(body.data.status).to.equal('QUEUED');",
+                  "  pm.expect(body.data.progress_percentage).to.equal(0.0);",
+                  "});",
+                  "",
+                  "// Guardar job_id para usarlo en otras requests",
+                  "const body = pm.response.json();",
+                  "if (body.data && body.data.job_id) {",
+                  "  pm.collectionVariables.set('job_id', body.data.job_id);",
+                  "  console.log('job_id guardado:', body.data.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Internal-Token",
+                "value": "{{internal_token}}",
+                "description": "Token de autenticacion interna"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/refresh/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "{{api_version}}",
+                "refresh",
+                ""
+              ]
+            },
+            "description": "Dispara el proceso ETL completo en background via Celery.\n\nRetorna 200 OK inmediatamente con un job_id. El ETL corre en background y al completar ENCOLA AUTOMATICAMENTE el clustering DBSCAN (nuevo job separado).\n\nFlujo completo:\n  ETL (EXTRACTING → TRANSFORMING → LOADING → COMPLETED)\n    └→ Clustering encolado automaticamente (job separado)\n         (CLUSTERING → COMPLETED)\n\nPara obtener el clustering_job_id: consultar el resultado del ETL job una vez completado — incluye el campo clustering_job_id en el log, o monitorear GET /jobs para ver el nuevo job.\n\nTiempo estimado:\n  ETL:        4–8 min (~900k registros)\n  Clustering: 5–15 min (~2700 sectores DBSCAN)\n\nRespuesta esperada:\n{\n  \"success\": true,\n  \"data\": {\n    \"job_id\": \"550e8400-e29b-41d4-a716-446655440000\",\n    \"status\": \"queued\",\n    \"message\": \"Job encolado — extrayendo ultimas 3 fechas de cierre desde SQL Server\"\n  }\n}"
+          },
+          "response": [
+            {
+              "name": "200 OK - Job Queued",
+              "originalRequest": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/refresh/"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"job_id\": \"550e8400-e29b-41d4-a716-446655440000\",\n    \"status\": \"QUEUED\",\n    \"progress_percentage\": 0.0,\n    \"total_records\": 0,\n    \"processed_records\": 0,\n    \"errors\": 0,\n    \"message\": \"Job encolado — extrayendo últimas 3 fechas de cierre desde SQL Server\"\n  },\n  \"message\": null,\n  \"error\": null\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Jobs",
+      "description": "Endpoints para consultar el estado de los jobs ETL",
+      "item": [
+        {
+          "name": "List Recent Jobs",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response is successful', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.success).to.be.true;",
+                  "});",
+                  "",
+                  "pm.test('Data is an array', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.data).to.be.an('array');",
+                  "});",
+                  "",
+                  "// Si hay jobs, guardar el job_id mas reciente",
+                  "const body = pm.response.json();",
+                  "if (body.data && body.data.length > 0) {",
+                  "  const latestJob = body.data[0];",
+                  "  if (latestJob.job_id) {",
+                  "    pm.collectionVariables.set('job_id', latestJob.job_id);",
+                  "    console.log('job_id mas reciente:', latestJob.job_id);",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/jobs?limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "{{api_version}}",
+                "jobs"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10",
+                  "description": "Numero maximo de jobs a retornar (default: 10)"
+                }
+              ]
+            },
+            "description": "Retorna los jobs ETL mas recientes almacenados en Redis, ordenados por fecha de creacion descendente.\n\nQuery params:\n- limit (int, default: 10): Numero maximo de jobs\n\nEstados posibles de un job:\n- QUEUED     — Encolado en Celery, esperando worker\n- EXTRACTING — Extrayendo datos desde SQL Server en chunks por fecha de cierre\n- LOADING    — Cargando DataFrame resultante a PostgreSQL\n- RETRYING   — Reintentando tras error (hasta 3 reintentos con backoff exponencial)\n- COMPLETED  — Proceso exitoso\n- FAILED     — Error definitivo (3 reintentos agotados)\n- CANCELLED  — Cancelado manualmente"
+          },
+          "response": [
+            {
+              "name": "200 OK - Jobs List",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/jobs?limit=10"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": [\n    {\n      \"job_id\": \"550e8400-e29b-41d4-a716-446655440000\",\n      \"status\": \"COMPLETED\",\n      \"progress_percentage\": 100.0,\n      \"total_records\": 901234,\n      \"processed_records\": 901234,\n      \"errors\": 0,\n      \"message\": \"Procesados 901,234 registros\",\n      \"created_at\": \"2026-03-24T08:00:00\",\n      \"completed_at\": \"2026-03-24T08:04:23\"\n    }\n  ],\n  \"message\": null,\n  \"error\": null\n}"
+            },
+            {
+              "name": "200 OK - No Jobs",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/jobs"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": [],\n  \"message\": null,\n  \"error\": null\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Job Status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response is successful', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.success).to.be.true;",
+                  "});",
+                  "",
+                  "pm.test('Job has required fields', () => {",
+                  "  const body = pm.response.json();",
+                  "  if (body.data) {",
+                  "    pm.expect(body.data).to.have.property('job_id');",
+                  "    pm.expect(body.data).to.have.property('status');",
+                  "    pm.expect(body.data).to.have.property('progress_percentage');",
+                  "  }",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "if (body.data) {",
+                  "  console.log('Job status:', body.data.status);",
+                  "  console.log('Progress:', body.data.progress_percentage + '%');",
+                  "  if (body.data.total_records > 0) {",
+                  "    console.log('Records:', body.data.processed_records, '/', body.data.total_records);",
+                  "  }",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/jobs/{{job_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "{{api_version}}",
+                "jobs",
+                "{{job_id}}"
+              ]
+            },
+            "description": "Retorna el estado actual de un job ETL especifico por su UUID.\n\nPath params:\n- job_id (UUID string): ID del job a consultar\n\nLos jobs se almacenan en Redis con TTL de 7 dias. Si el job no existe (expirado o ID incorrecto), data sera null.\n\nPara monitoreo de progreso: usar este endpoint con polling o conectarse al WebSocket /api/v1/ws/progress/{job_id} para actualizaciones en tiempo real."
+          },
+          "response": [
+            {
+              "name": "200 OK - Job Extracting",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/jobs/{{job_id}}"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"job_id\": \"550e8400-e29b-41d4-a716-446655440000\",\n    \"status\": \"EXTRACTING\",\n    \"progress_percentage\": 15.3,\n    \"total_records\": 0,\n    \"processed_records\": 0,\n    \"errors\": 0,\n    \"message\": \"Extrayendo fechas: 31/01/2026, 28/02/2026, 31/03/2026 (intento 1)\",\n    \"created_at\": \"2026-03-24T08:00:00\",\n    \"completed_at\": null\n  },\n  \"message\": null,\n  \"error\": null\n}"
+            },
+            {
+              "name": "200 OK - Job Completed",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/jobs/{{job_id}}"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"job_id\": \"550e8400-e29b-41d4-a716-446655440000\",\n    \"status\": \"COMPLETED\",\n    \"progress_percentage\": 100.0,\n    \"total_records\": 901234,\n    \"processed_records\": 901234,\n    \"errors\": 0,\n    \"message\": \"Procesados 901,234 registros\",\n    \"created_at\": \"2026-03-24T08:00:00\",\n    \"completed_at\": \"2026-03-24T08:04:03\"\n  },\n  \"message\": null,\n  \"error\": null\n}"
+            },
+            {
+              "name": "200 OK - Job Failed",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/jobs/{{job_id}}"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"job_id\": \"550e8400-e29b-41d4-a716-446655440000\",\n    \"status\": \"FAILED\",\n    \"progress_percentage\": 0.0,\n    \"total_records\": 0,\n    \"processed_records\": 0,\n    \"errors\": 1,\n    \"message\": \"Falló después de 4 intentos\",\n    \"error\": \"Could not connect to SQL Server\",\n    \"created_at\": \"2026-03-24T08:00:00\",\n    \"completed_at\": null\n  },\n  \"message\": null,\n  \"error\": null\n}"
+            },
+            {
+              "name": "200 OK - Job Not Found",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/jobs/nonexistent-id"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": null,\n  \"message\": null,\n  \"error\": null\n}"
+            }
+          ]
+        },
+        {
+          "name": "List Jobs - Custom Limit",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/jobs?limit=5",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "{{api_version}}",
+                "jobs"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5",
+                  "description": "Retornar solo los ultimos 5 jobs"
+                }
+              ]
+            },
+            "description": "Ejemplo con limite personalizado."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Promotores",
+      "description": "Endpoints para gestionar el catalogo de promotores.\n\nOperacion sincrona — no usa Celery ni crea jobs. Trunca y recarga la tabla catalogo_promotores directamente desde SQL Server.",
+      "item": [
+        {
+          "name": "Refresh Promotores",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response is successful', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.success).to.be.true;",
+                  "});",
+                  "",
+                  "pm.test('Message includes promotores count', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.message).to.include('promotores');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Internal-Token",
+                "value": "{{internal_token}}",
+                "description": "Token de autenticacion interna"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/promotores/refresh",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "{{api_version}}",
+                "promotores",
+                "refresh"
+              ]
+            },
+            "description": "Trunca la tabla catalogo_promotores en PostgreSQL y la recarga completamente desde DBI_ECODIGITAL.dbo.Zenit_Catalogo_promotores en SQL Server.\n\nLa tabla fuente tiene formato ancho (una columna por promotor con sufijo _mN). Este endpoint despivotea el resultado automaticamente antes de cargarlo, convirtiendo cada promotor en una fila.\n\nOperacion sincrona — no crea ningun job. Retorna cuando la carga esta completa.\n\nRespuesta esperada:\n{\n  \"success\": true,\n  \"data\": null,\n  \"message\": \"842 promotores actualizados\",\n  \"error\": null\n}"
+          },
+          "response": [
+            {
+              "name": "200 OK - Promotores Actualizados",
+              "originalRequest": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/promotores/refresh"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": null,\n  \"message\": \"842 promotores actualizados\",\n  \"error\": null\n}"
+            },
+            {
+              "name": "500 Error - SQL Server inaccesible",
+              "originalRequest": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/promotores/refresh"
+                }
+              },
+              "status": "Internal Server Error",
+              "code": 500,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": false,\n  \"data\": null,\n  \"message\": null,\n  \"error\": \"Could not connect to SQL Server\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Sectores",
+      "description": "Endpoints para cargar los territorios de promotores y generar sus geometrias poligonales en PostgreSQL/PostGIS.\n\nFuente de datos: IBM DB2 — tabla lbgeoubi.sectores (~216k puntos, ~2714 promotores).\n\nFlujo:\n1. Conecta a DB2 y ejecuta SELECT * FROM lbgeoubi.sectores\n2. Carga los puntos en la tabla staging sectores_puntos_raw (TRUNCATE + insert)\n3. Ejecuta la funcion PostgreSQL fn_build_sector_polygons() que agrupa los vertices por GFORMS y construye un poligono exacto por promotor usando ST_MakePolygon\n4. El resultado queda en sectores_geometria (GEOMETRY POLYGON, SRID 4326)\n\nPrerequisitos:\n- Servicio corriendo en Docker (ibm-db requiere Linux x86_64)\n- Credenciales DB2 configuradas en .env (DB2_HOST, DB2_PORT, DB2_USER, DB2_PASSWORD, DB2_DATABASE)\n- Tablas y funcion creadas: ejecutar database/01_sectores_puntos_raw.sql, 02_sectores_geometria.sql, 03_fn_build_sector_polygons.sql",
+      "item": [
+        {
+          "name": "Refresh Sectores",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('Response is successful', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.success).to.be.true;",
+                  "});",
+                  "",
+                  "pm.test('Message includes sector count', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.message).to.include('sectores');",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "if (body.message) {",
+                  "  console.log('Resultado:', body.message);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Internal-Token",
+                "value": "{{internal_token}}",
+                "description": "Token de autenticacion interna"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/sectores/refresh",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "{{api_version}}",
+                "sectores",
+                "refresh"
+              ]
+            },
+            "description": "Extrae los puntos de sectores desde DB2 (lbgeoubi.sectores) y genera los poligonos PostGIS por promotor.\n\nOperacion sincrona (~30–60s segun latencia DB2 + 216k puntos + construccion de poligonos).\n\nCada promotor (GFORMS) tiene entre 8 y 4783 vertices ordenados por ID_SECTOR que forman el limite de su territorio. La funcion PostGIS construye el poligono exacto usando ST_MakePolygon(ST_MakeLine(vertices ordenados)) y cierra automaticamente los anillos abiertos.\n\nFallback: si el poligono resultante es invalido, se usa ST_ConvexHull como alternativa.\n\nRequiere servicio en Docker (ibm-db no instala en macOS ARM).\n\nRespuesta esperada:\n{\n  \"success\": true,\n  \"data\": null,\n  \"message\": \"2714 poligonos de sectores generados desde 216,197 puntos\",\n  \"error\": null\n}"
+          },
+          "response": [
+            {
+              "name": "200 OK - Sectores Generados",
+              "originalRequest": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/sectores/refresh"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": null,\n  \"message\": \"2714 polígonos de sectores generados desde 216,197 puntos\",\n  \"error\": null\n}"
+            },
+            {
+              "name": "500 Error - DB2 inaccesible",
+              "originalRequest": {
+                "method": "POST",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/sectores/refresh"
+                }
+              },
+              "status": "Internal Server Error",
+              "code": 500,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": false,\n  \"data\": null,\n  \"message\": null,\n  \"error\": \"[IBM][CLI Driver] SQL30081N  A communication error has been detected\"\n}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Clustering",
+      "description": "Endpoints para ejecutar el pipeline de clustering DBSCAN sobre creditos_historico_etl.\n\nEl clustering se encola automaticamente al finalizar el ETL (POST /refresh), pero tambien puede dispararse manualmente.\n\nPipeline (ejecutado en background por Celery):\n1. Lee creditos_historico_etl para las ultimas 3 fechas de cierre\n2. Lee sectores_geometria para asignacion espacial\n3. Asigna creditos a sectores (spatial join + fallback COD_PROMOTOR)\n4. DBSCAN por sector (eps=100m, min_samples=8) — solo registros con coordenadas\n5. Metricas por cluster para 3 meses (mora, capital, KPIs)\n6. Tendencias, volatilidad, retencion y churn\n7. Geometrias circulares (100m de radio) por centroide\n8. TRUNCATE + INSERT en clusters_analisis\n9. fn_sync_clusters_to_layer(\"Clusters-Creditos\") → layer_feature\n\nPrerrequisitos:\n- creditos_historico_etl poblada (POST /refresh)\n- sectores_geometria poblada (POST /sectores/refresh)\n- Capa \"Clusters-Creditos\" creada en tabla layer\n- Scripts database/04_clusters_analisis.sql y 05_fn_sync_clusters_to_layer.sql aplicados",
+      "item": [
+        {
+          "name": "Run Clustering",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 202', () => {",
+                  "  pm.response.to.have.status(202);",
+                  "});",
+                  "",
+                  "pm.test('Response is successful', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.success).to.be.true;",
+                  "});",
+                  "",
+                  "pm.test('Has job_id', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.data).to.have.property('job_id');",
+                  "});",
+                  "",
+                  "// Guardar clustering_job_id para usarlo en Get Job Status",
+                  "const body = pm.response.json();",
+                  "if (body.data && body.data.job_id) {",
+                  "  pm.collectionVariables.set('clustering_job_id', body.data.job_id);",
+                  "  console.log('Clustering job_id guardado:', body.data.job_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Internal-Token",
+                "value": "{{internal_token}}",
+                "description": "Token de autenticacion interna"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/clustering/run",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "{{api_version}}",
+                "clustering",
+                "run"
+              ]
+            },
+            "description": "Dispara el pipeline de clustering DBSCAN en background (Celery).\n\nRetorna 202 Accepted inmediatamente con un job_id para monitorear el progreso.\n\nEl clustering usa las mismas ultimas 3 fechas de cierre que el ETL (ultimo dia de cada uno de los 3 meses anteriores).\n\nNOTA: Este endpoint se llama automaticamente al finalizar POST /refresh. Solo es necesario llamarlo manualmente si se quiere re-ejecutar el clustering sin volver a cargar los datos ETL.\n\nTiempo estimado: 5-15 min segun volumen (~900k registros, ~2700 sectores).\n\nMonitorear con:\n- GET /api/v1/jobs/{clustering_job_id}\n- WS  ws://localhost:3666/api/v1/ws/progress/{clustering_job_id}\n\nRespuesta esperada:\n{\n  \"success\": true,\n  \"data\": {\n    \"job_id\": \"uuid\",\n    \"status\": \"queued\",\n    \"message\": \"Clustering encolado para fechas: 31/01/2026, 28/02/2026, 31/03/2026\"\n  },\n  \"message\": \"Clustering iniciado en background\"\n}"
+          },
+          "response": [
+            {
+              "name": "202 Accepted - Clustering Encolado",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-Internal-Token",
+                    "value": "{{internal_token}}"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/clustering/run"
+                }
+              },
+              "status": "Accepted",
+              "code": 202,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"job_id\": \"7f3e9a12-4b2c-4d8e-9f1a-2b3c4d5e6f70\",\n    \"status\": \"queued\",\n    \"progress_percentage\": 0.0,\n    \"total_records\": 0,\n    \"processed_records\": 0,\n    \"errors\": 0,\n    \"message\": \"Clustering encolado para fechas: 31/01/2026, 28/02/2026, 31/03/2026\"\n  },\n  \"message\": \"Clustering iniciado en background\",\n  \"error\": null\n}"
+            },
+            {
+              "name": "401 Unauthorized - Token Invalido",
+              "originalRequest": {
+                "method": "POST",
+                "header": [
+                  {
+                    "key": "X-Internal-Token",
+                    "value": "wrong-token"
+                  }
+                ],
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/clustering/run"
+                }
+              },
+              "status": "Unauthorized",
+              "code": 401,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"detail\": \"Unauthorized\"\n}"
+            },
+            {
+              "name": "200 OK - Job Clustering Completado (Get Job Status)",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/jobs/{{clustering_job_id}}"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"job_id\": \"7f3e9a12-4b2c-4d8e-9f1a-2b3c4d5e6f70\",\n    \"status\": \"completed\",\n    \"progress_percentage\": 100.0,\n    \"message\": \"7263 clusters generados \\u2014 7263 features en capa\",\n    \"duration_seconds\": 382.4\n  },\n  \"message\": null,\n  \"error\": null\n}"
+            },
+            {
+              "name": "200 OK - Job Clustering En Proceso",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/api/{{api_version}}/jobs/{{clustering_job_id}}"
+                }
+              },
+              "status": "OK",
+              "code": 200,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": true,\n  \"data\": {\n    \"job_id\": \"7f3e9a12-4b2c-4d8e-9f1a-2b3c4d5e6f70\",\n    \"status\": \"clustering\",\n    \"progress_percentage\": 0.0,\n    \"message\": \"Ejecutando clustering DBSCAN (intento 1)\"\n  },\n  \"message\": null,\n  \"error\": null\n}"
+            }
+          ]
+        },
+        {
+          "name": "Get Clustering Job Status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 200', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "const body = pm.response.json();",
+                  "if (body.data) {",
+                  "  console.log('Status:', body.data.status);",
+                  "  if (body.data.message) console.log('Message:', body.data.message);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/jobs/{{clustering_job_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "{{api_version}}",
+                "jobs",
+                "{{clustering_job_id}}"
+              ]
+            },
+            "description": "Consulta el estado del job de clustering usando la variable clustering_job_id.\n\nEstados posibles:\n- queued      → encolado en Celery, esperando worker\n- clustering  → DBSCAN corriendo (puede tardar 5-15 min)\n- completed   → clusters en DB y layer_feature actualizada\n- failed      → error, ver campo message\n- retrying    → reintentando (max 2 intentos)\n\nAl completar, verificar en DB:\nSELECT COUNT(*) FROM clusters_analisis;\nSELECT total_features FROM layer WHERE name = 'Clusters-Creditos';"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "WebSocket",
+      "description": "Informacion sobre la conexion WebSocket para monitoreo en tiempo real del ETL.\n\nPostman soporta WebSockets desde v9.0+. Usar la opcion 'New > WebSocket Request' en Postman.\n\nURL: ws://localhost:3666/api/v1/ws/progress/{job_id}",
+      "item": [
+        {
+          "name": "WebSocket Progress - Info",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/{{api_version}}/health/check-health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "{{api_version}}",
+                "health",
+                "check-health"
+              ]
+            },
+            "description": "Esta request es solo de referencia. Las conexiones WebSocket no se hacen con HTTP GET.\n\nPara conectar al WebSocket de progreso en Postman:\n1. Ir a File > New > WebSocket Request\n2. URL: ws://localhost:3666/api/v1/ws/progress/{{job_id}}\n3. Click en Connect\n\nFlujo del WebSocket:\n1. Al conectar, recibe el estado actual del job desde Redis\n2. Recibe actualizaciones en tiempo real conforme el worker extrae y procesa chunks desde SQL Server\n3. La conexion se cierra automaticamente cuando el job llega a estado terminal\n\nEstados terminales que cierran la conexion:\n- COMPLETED\n- FAILED\n- CANCELLED\n\nEjemplo de mensajes recibidos:\n{\"job_id\": \"550e8400...\", \"status\": \"QUEUED\", \"progress_percentage\": 0.0}\n{\"job_id\": \"550e8400...\", \"status\": \"EXTRACTING\", \"message\": \"Extrayendo fechas: 31/01/2026, 28/02/2026, 31/03/2026\"}\n{\"job_id\": \"550e8400...\", \"status\": \"EXTRACTING\", \"message\": \"[31/01/2026] Chunk 5: 10000 extraídos → 10000 limpios\"}\n{\"job_id\": \"550e8400...\", \"status\": \"COMPLETED\", \"progress_percentage\": 100.0, \"message\": \"Procesados 901,234 registros\"}\n\nImplementacion: Redis pub/sub en canal progress:{job_id}"
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Utils & Debug",
+      "description": "Endpoints de utilidad y debug",
+      "item": [
+        {
+          "name": "Trigger Test Error",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status code is 504', () => {",
+                  "  pm.response.to.have.status(504);",
+                  "});",
+                  "",
+                  "pm.test('Error response has correct format', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.success).to.be.false;",
+                  "  pm.expect(body).to.have.property('error');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/trigger-error",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "trigger-error"
+              ]
+            },
+            "description": "Endpoint de prueba que dispara intencionalmente un error 504 (Gateway Timeout).\n\nUtil para verificar que el middleware de manejo de errores funciona correctamente y que las respuestas de error siguen el formato estandar ApiResponse.\n\nRespuesta esperada:\n{\n  \"success\": false,\n  \"data\": null,\n  \"message\": null,\n  \"error\": \"This is a test error\"\n}"
+          },
+          "response": [
+            {
+              "name": "504 Gateway Timeout - Error Format",
+              "originalRequest": {
+                "method": "GET",
+                "url": {
+                  "raw": "{{base_url}}/trigger-error"
+                }
+              },
+              "status": "Gateway Timeout",
+              "code": 504,
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json"
+                }
+              ],
+              "body": "{\n  \"success\": false,\n  \"data\": null,\n  \"message\": null,\n  \"error\": \"This is a test error\"\n}"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Pre-request script global",
+          "// No se requiere autenticacion actualmente (todos los endpoints son abiertos)"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Test global: verificar formato de respuesta ApiResponse",
+          "if (pm.response.code === 200) {",
+          "  pm.test('Response follows ApiResponse format', () => {",
+          "    const body = pm.response.json();",
+          "    pm.expect(body).to.have.property('success');",
+          "    pm.expect(body).to.have.property('data');",
+          "    pm.expect(body).to.have.property('message');",
+          "    pm.expect(body).to.have.property('error');",
+          "  });",
+          "}"
+        ]
+      }
+    }
+  ]
+}
